@@ -1,0 +1,8 @@
+int32 spot_id
+---
+bool success
+string message
+float64 error_x
+float64 error_y
+float64 error_theta
+float64 distance

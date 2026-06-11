@@ -25,7 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Go2Move.msg"
   "msg/Go2RpyCmd.msg"
   "msg/IMU.msg"
-  
+
   # Merged from unitree_go
   "msg/AudioData.msg"
   "msg/BmsCmd.msg"
@@ -53,6 +53,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VoxelHeightMapState.msg"
   "msg/WebRtcReq.msg"
   "msg/WirelessController.msg"
+
+  # Parking spot services
+  "srv/SaveNamedPose.srv"
+  "srv/SetPoseFromSpot.srv"
+  "srv/GetPoseError.srv"
+  "srv/ListParkingSpots.srv"
 
   DEPENDENCIES geometry_msgs # Add packages that above messages depend on
 )
