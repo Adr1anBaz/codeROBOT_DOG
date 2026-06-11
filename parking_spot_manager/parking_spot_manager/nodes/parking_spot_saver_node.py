@@ -19,7 +19,7 @@ class ParkingSpotSaverNode(Node):
 
         self.declare_parameter('map_name', 'my_map')
         self.declare_parameter('base_directory', '')
-        self.declare_parameter('auto_save_distance', 2.0)
+        self.declare_parameter('auto_save_distance', 0.5)
         self.declare_parameter('min_angle_change', 0.785)
 
         self.map_name = self.get_parameter('map_name').get_parameter_value().string_value
