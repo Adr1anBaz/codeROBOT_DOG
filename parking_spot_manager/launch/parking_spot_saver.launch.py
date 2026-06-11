@@ -21,7 +21,7 @@ def generate_launch_description():
             description='Directory to save parking spots YAML files'),
         DeclareLaunchArgument(
             'auto_save_distance',
-            default_value='0.0',
+            default_value='2.0',
             description='Auto-save a spot every N meters (0 = disabled)'),
 
         Node(

@@ -19,11 +19,13 @@ class ParkingSpotSaverNode(Node):
 
         self.declare_parameter('map_name', 'my_map')
         self.declare_parameter('base_directory', '')
-        self.declare_parameter('auto_save_distance', 0.0)
+        self.declare_parameter('auto_save_distance', 2.0)
+        self.declare_parameter('min_angle_change', 0.785)
 
         self.map_name = self.get_parameter('map_name').get_parameter_value().string_value
         base_dir = self.get_parameter('base_directory').get_parameter_value().string_value
         self.auto_save_distance = self.get_parameter('auto_save_distance').get_parameter_value().double_value
+        self.min_angle_change = self.get_parameter('min_angle_change').get_parameter_value().double_value
 
         self.storage = ParkingSpotStorage(base_directory=base_dir)
         self.spots = self.storage.load_spots(self.map_name)
@@ -42,13 +44,14 @@ class ParkingSpotSaverNode(Node):
 
         self.marker_timer = self.create_timer(2.0, self.publish_markers)
 
-        if self.auto_save_distance > 0.0:
-            self.auto_save_timer = self.create_timer(1.0, self.auto_save_check)
-            self.last_auto_save_x = None
-            self.last_auto_save_y = None
+        self.last_save_x = None
+        self.last_save_y = None
+        self.last_save_yaw = None
+        self.auto_save_timer = self.create_timer(1.0, self.auto_save_check)
 
         self.get_logger().info(
             f'ParkingSpotSaver started. Map: {self.map_name}, '
+            f'Auto-save every {self.auto_save_distance}m or {math.degrees(self.min_angle_change):.0f}deg. '
             f'Loaded {len(self.spots)} existing spots.')
 
     def get_current_map_pose(self):
@@ -56,8 +59,7 @@ class ParkingSpotSaverNode(Node):
             transform = self.tf_buffer.lookup_transform(
                 'map', 'base_link', rclpy.time.Time(), timeout=Duration(seconds=1.0))
             return transform
-        except (LookupException, ExtrapolationException, ConnectivityException) as e:
-            self.get_logger().warning(f'Cannot get map->base_link transform: {e}')
+        except (LookupException, ExtrapolationException, ConnectivityException):
             return None
 
     def save_spot_callback(self, request, response):
@@ -123,33 +125,39 @@ class ParkingSpotSaverNode(Node):
         return response
 
     def auto_save_check(self):
-        if self.auto_save_distance <= 0.0:
-            return
-
         transform = self.get_current_map_pose()
         if transform is None:
             return
 
         x = transform.transform.translation.x
         y = transform.transform.translation.y
+        q = transform.transform.rotation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
 
-        if self.last_auto_save_x is None:
-            self.last_auto_save_x = x
-            self.last_auto_save_y = y
+        if self.last_save_x is None:
+            self._do_auto_save(transform, x, y, yaw)
             return
 
-        dist = math.sqrt(
-            (x - self.last_auto_save_x) ** 2 + (y - self.last_auto_save_y) ** 2)
+        dist = math.sqrt((x - self.last_save_x) ** 2 + (y - self.last_save_y) ** 2)
+        angle_diff = abs(yaw - self.last_save_yaw)
+        if angle_diff > math.pi:
+            angle_diff = 2.0 * math.pi - angle_diff
 
-        if dist >= self.auto_save_distance:
-            spot_name = f"auto_{len(self.spots)}"
-            spot = self._transform_to_spot(transform, spot_name)
-            self.spots.append(spot)
-            self.storage.save_spots(self.map_name, self.spots)
-            self.last_auto_save_x = x
-            self.last_auto_save_y = y
-            self.get_logger().info(
-                f'Auto-saved "{spot_name}" at ({spot.x:.2f}, {spot.y:.2f})')
+        if dist >= self.auto_save_distance or angle_diff >= self.min_angle_change:
+            self._do_auto_save(transform, x, y, yaw)
+
+    def _do_auto_save(self, transform, x, y, yaw):
+        spot_name = f"spot_{len(self.spots)}"
+        spot = self._transform_to_spot(transform, spot_name)
+        self.spots.append(spot)
+        self.storage.save_spots(self.map_name, self.spots)
+        self.last_save_x = x
+        self.last_save_y = y
+        self.last_save_yaw = yaw
+        self.get_logger().info(
+            f'Auto-saved [{len(self.spots)-1}] "{spot_name}" at ({x:.2f}, {y:.2f})')
 
     def publish_markers(self):
         if self.spots:
