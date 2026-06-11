@@ -232,6 +232,16 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
             }.items(),
         ),
+        # Parking Spot Loader (loads saved poses for AMCL initialization)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                os.path.join(get_package_share_directory('parking_spot_manager'),
+                            'launch', 'parking_spot_loader.launch.py')
+            ]),
+            launch_arguments={
+                'map_name': os.getenv('MAP_NAME', 'my_map'),
+            }.items(),
+        ),
     ]
     
     return LaunchDescription(

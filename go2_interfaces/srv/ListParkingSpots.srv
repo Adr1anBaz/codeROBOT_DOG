@@ -1,0 +1,7 @@
+string map_name
+---
+string[] spot_names
+int32[] spot_ids
+float64[] x_positions
+float64[] y_positions
+float64[] thetas

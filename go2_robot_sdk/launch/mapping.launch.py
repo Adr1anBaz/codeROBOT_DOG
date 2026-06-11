@@ -216,6 +216,16 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
             }.items(),
         ),
+        # Parking Spot Saver (saves poses during SLAM for re-localization)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                os.path.join(get_package_share_directory('parking_spot_manager'),
+                            'launch', 'parking_spot_saver.launch.py')
+            ]),
+            launch_arguments={
+                'map_name': map_name,
+            }.items(),
+        ),
     ]
     
     return LaunchDescription(

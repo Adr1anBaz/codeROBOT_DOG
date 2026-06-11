@@ -1,0 +1,808 @@
+{
+  "project": "Go2 Parking Spots System - Re-localization via Saved Poses",
+  "description": "Sistema para guardar poses del robot durante SLAM y usarlas para inicializar AMCL en sesiones de navegación",
+  "metadata": {
+    "author": "Implementation Plan",
+    "created": "2026-06-10",
+    "estimated_total_time": "8-12 hours",
+    "difficulty": "Medium",
+    "ros2_packages_needed": ["tf2_ros", "tf2_geometry_msgs", "visualization_msgs", "geometry_msgs", "std_srvs"]
+  },
+
+  "phases": [
+    {
+      "phase": 1,
+      "name": "Setup & Dependencies",
+      "description": "Configurar estructura de archivos y dependencias",
+      "estimated_time": "30 minutes",
+      "tasks": [
+        {
+          "id": "1.1",
+          "name": "Crear package para parking spots",
+          "description": "Crear un nuevo paquete ROS2 para el sistema de parking spots",
+          "why": "Mantener el código modular y separado del SDK principal. Permite fácil mantenimiento y testing independiente.",
+          "where": {
+            "create_directory": "/Users/adrianbazaldua/Desktop/work/verano/go2_ros2_sdk/parking_spot_manager",
+            "files_to_create": [
+              "parking_spot_manager/package.xml",
+              "parking_spot_manager/setup.py",
+              "parking_spot_manager/parking_spot_manager/__init__.py"
+            ]
+          },
+          "implementation_details": {
+            "package_name": "parking_spot_manager",
+            "dependencies": [
+              "rclpy",
+              "std_msgs",
+              "geometry_msgs",
+              "visualization_msgs",
+              "tf2_ros",
+              "tf2_geometry_msgs",
+              "std_srvs",
+              "PyYAML"
+            ]
+          },
+          "dependencies": [],
+          "validation": "ros2 pkg list | grep parking_spot_manager"
+        },
+        {
+          "id": "1.2",
+          "name": "Crear estructura de directorios",
+          "description": "Organizar directorios para código, configuración y datos",
+          "why": "Estructura clara para separar nodos, mensajes, configuración y datos guardados",
+          "where": {
+            "create_directories": [
+              "parking_spot_manager/parking_spot_manager/nodes",
+              "parking_spot_manager/parking_spot_manager/services",
+              "parking_spot_manager/parking_spot_manager/utils",
+              "parking_spot_manager/config",
+              "parking_spot_manager/launch",
+              "parking_spot_manager/srv"
+            ]
+          },
+          "dependencies": ["1.1"],
+          "validation": "ls -la parking_spot_manager/"
+        },
+        {
+          "id": "1.3",
+          "name": "Definir mensajes y servicios personalizados",
+          "description": "Crear definiciones de servicios ROS2 para interactuar con el sistema",
+          "why": "Necesitamos servicios tipados para guardar poses con nombre, seleccionar spots, y obtener información de error",
+          "where": {
+            "create_files": [
+              "parking_spot_manager/srv/SaveNamedPose.srv",
+              "parking_spot_manager/srv/SetPoseFromSpot.srv",
+              "parking_spot_manager/srv/GetPoseError.srv",
+              "parking_spot_manager/srv/ListParkingSpots.srv"
+            ]
+          },
+          "file_contents": {
+            "SaveNamedPose.srv": "string name\nstring map_name\n---\nbool success\nstring message\nfloat64 x\nfloat64 y\nfloat64 theta",
+            "SetPoseFromSpot.srv": "int32 spot_id\n---\nbool success\nstring message",
+            "GetPoseError.srv": "int32 spot_id\n---\nfloat64 error_x\nfloat64 error_y\nfloat64 error_theta\nfloat64 distance\nstring message",
+            "ListParkingSpots.srv": "string map_name\n---\nstring[] spot_names\nint32[] spot_ids\nfloat64[] x_positions\nfloat64[] y_positions"
+          },
+          "dependencies": ["1.2"],
+          "validation": "ros2 interface list | grep parking_spot_manager"
+        }
+      ]
+    },
+
+    {
+      "phase": 2,
+      "name": "Core Data Structures",
+      "description": "Implementar clases base para manejar poses y almacenamiento",
+      "estimated_time": "1.5 hours",
+      "tasks": [
+        {
+          "id": "2.1",
+          "name": "Crear clase ParkingSpot",
+          "description": "Clase para representar una pose guardada con metadata",
+          "why": "Encapsular toda la información de una pose: posición, orientación, timestamp, nombre. Facilita serialización y manipulación.",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/utils/parking_spot.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "class_name": "ParkingSpot",
+            "attributes": [
+              "name: str",
+              "x: float",
+              "y: float",
+              "z: float",
+              "qx: float (quaternion x)",
+              "qy: float (quaternion y)",
+              "qz: float (quaternion z)",
+              "qw: float (quaternion w)",
+              "timestamp: float",
+              "frame_id: str (siempre 'map')"
+            ],
+            "methods": [
+              "to_dict() -> dict",
+              "from_dict(data: dict) -> ParkingSpot",
+              "to_pose_msg() -> geometry_msgs.msg.Pose",
+              "to_pose_with_covariance() -> geometry_msgs.msg.PoseWithCovarianceStamped",
+              "calculate_distance_to(other_pose) -> float",
+              "calculate_angle_diff_to(other_pose) -> float"
+            ]
+          },
+          "dependencies": ["1.3"],
+          "validation": "python3 -c 'from parking_spot_manager.utils.parking_spot import ParkingSpot'"
+        },
+        {
+          "id": "2.2",
+          "name": "Crear clase ParkingSpotStorage",
+          "description": "Clase para manejar lectura/escritura de poses en archivos YAML",
+          "why": "Centralizar la lógica de persistencia. Maneja la relación entre mapas y sus parking spots (my_map.yaml -> my_map_parking_spots.yaml)",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/utils/storage.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "class_name": "ParkingSpotStorage",
+            "methods": [
+              "load_spots(map_name: str) -> List[ParkingSpot]",
+              "save_spots(map_name: str, spots: List[ParkingSpot]) -> bool",
+              "append_spot(map_name: str, spot: ParkingSpot) -> bool",
+              "get_spots_file_path(map_name: str) -> str",
+              "spot_exists(map_name: str, spot_name: str) -> bool"
+            ],
+            "file_format": "YAML",
+            "naming_convention": "{map_name}_parking_spots.yaml"
+          },
+          "dependencies": ["2.1"],
+          "validation": "python3 -c 'from parking_spot_manager.utils.storage import ParkingSpotStorage; s = ParkingSpotStorage()'"
+        },
+        {
+          "id": "2.3",
+          "name": "Crear clase MarkerPublisher",
+          "description": "Clase para publicar marcadores visuales en RViz",
+          "why": "Visualización es crítica para que el usuario vea dónde están las poses guardadas. Marcadores muestran posición y orientación en el mapa.",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/utils/marker_publisher.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "class_name": "MarkerPublisher",
+            "markers_types": [
+              "ARROW: Muestra posición y orientación de cada spot",
+              "TEXT_VIEW_FACING: Muestra nombre del spot encima de la flecha",
+              "SPHERE: Punto visible desde lejos"
+            ],
+            "color_coding": {
+              "available_spot": "Verde (0, 1, 0)",
+              "nearest_spot": "Amarillo (1, 1, 0)",
+              "selected_spot": "Azul (0, 0, 1)",
+              "error_large": "Rojo (1, 0, 0)"
+            },
+            "methods": [
+              "publish_spot_marker(spot: ParkingSpot, color, marker_id: int)",
+              "publish_all_spots(spots: List[ParkingSpot])",
+              "highlight_spot(spot_id: int)",
+              "clear_markers()"
+            ]
+          },
+          "dependencies": ["2.1"],
+          "validation": "ros2 topic list | grep /parking_spot_markers"
+        }
+      ]
+    },
+
+    {
+      "phase": 3,
+      "name": "Parking Spot Saver Node",
+      "description": "Nodo para guardar poses durante la sesión de SLAM/mapping",
+      "estimated_time": "2 hours",
+      "tasks": [
+        {
+          "id": "3.1",
+          "name": "Implementar ParkingSpotSaverNode",
+          "description": "Nodo ROS2 que lee el transform map->base_link y guarda poses",
+          "why": "Este nodo corre durante SLAM. Captura la pose del robot en el frame 'map' (calculado por SLAM) y la guarda para uso posterior.",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/nodes/parking_spot_saver_node.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "class_name": "ParkingSpotSaverNode",
+            "inherits": "rclpy.node.Node",
+            "subscribers": [
+              "None (usa TF2 buffer directamente)"
+            ],
+            "publishers": [
+              "/parking_spot_markers (visualization_msgs/MarkerArray): Visualiza spots guardados"
+            ],
+            "services_provided": [
+              "/save_parking_spot (std_srvs/Trigger): Guarda pose actual con nombre auto-generado",
+              "/save_named_parking_spot (parking_spot_manager/SaveNamedPose): Guarda con nombre específico",
+              "/list_saved_spots (parking_spot_manager/ListParkingSpots): Lista spots ya guardados"
+            ],
+            "parameters": [
+              "map_name (string): Nombre del mapa actual",
+              "auto_save_interval (float): Intervalo para auto-guardar (0 = disabled)",
+              "auto_save_distance (float): Distancia mínima entre auto-saves (meters)"
+            ],
+            "key_logic": [
+              "1. Recibe llamada de servicio",
+              "2. Usa tf_buffer.lookup_transform('map', 'base_link', time=now)",
+              "3. Extrae x, y, z, quaternion del TransformStamped",
+              "4. Crea objeto ParkingSpot",
+              "5. Guarda usando ParkingSpotStorage",
+              "6. Publica marker visual",
+              "7. Retorna éxito/fallo"
+            ]
+          },
+          "critical_code_sections": {
+            "tf_lookup": "self.tf_buffer.lookup_transform(target_frame='map', source_frame='base_link', time=rclpy.time.Time(), timeout=Duration(seconds=1.0))",
+            "error_handling": "Capturar tf2_ros.LookupException, tf2_ros.ExtrapolationException cuando SLAM no ha inicializado el transform"
+          },
+          "dependencies": ["2.1", "2.2", "2.3"],
+          "validation": "ros2 node list | grep parking_spot_saver"
+        },
+        {
+          "id": "3.2",
+          "name": "Crear launch file para saver node",
+          "description": "Launch file que incluye el saver node en mapping.launch.py",
+          "why": "Integrar el nodo de guardado en el workflow de mapping existente sin modificar mucho código",
+          "where": {
+            "file": "parking_spot_manager/launch/parking_spot_saver.launch.py",
+            "create_new": true,
+            "modify_file": "go2_robot_sdk/launch/mapping.launch.py"
+          },
+          "implementation_details": {
+            "launch_includes": "Se puede incluir desde mapping.launch.py con IncludeLaunchDescription",
+            "parameters_to_pass": [
+              "map_name: Heredar de MAP_NAME env variable",
+              "auto_save_interval: 0.0 (deshabilitado por defecto)",
+              "auto_save_distance: 2.0 (metros)"
+            ],
+            "modification_in_mapping_launch": "Añadir línea en include_launches para cargar parking_spot_saver.launch.py"
+          },
+          "dependencies": ["3.1"],
+          "validation": "ros2 launch parking_spot_manager parking_spot_saver.launch.py"
+        }
+      ]
+    },
+
+    {
+      "phase": 4,
+      "name": "Parking Spot Loader Node",
+      "description": "Nodo para cargar poses guardadas y establecer initial_pose en AMCL",
+      "estimated_time": "2.5 hours",
+      "tasks": [
+        {
+          "id": "4.1",
+          "name": "Implementar ParkingSpotLoaderNode",
+          "description": "Nodo ROS2 que carga spots y permite establecer pose inicial en AMCL",
+          "why": "Este nodo corre durante navegación. Carga las poses guardadas, las visualiza, y permite al usuario decirle a AMCL 'estoy en esta pose'.",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/nodes/parking_spot_loader_node.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "class_name": "ParkingSpotLoaderNode",
+            "inherits": "rclpy.node.Node",
+            "subscribers": [
+              "/odom (nav_msgs/Odometry): Para calcular distancia a spots en tiempo real"
+            ],
+            "publishers": [
+              "/initialpose (geometry_msgs/PoseWithCovarianceStamped): Para inicializar AMCL",
+              "/parking_spot_markers (visualization_msgs/MarkerArray): Visualizar spots",
+              "/parking_spot_errors (std_msgs/String): Feedback de error en texto"
+            ],
+            "services_provided": [
+              "/set_pose_from_spot (parking_spot_manager/SetPoseFromSpot): Establece initial_pose desde spot_id",
+              "/set_pose_from_nearest (std_srvs/Trigger): Usa el spot más cercano automáticamente",
+              "/get_pose_error (parking_spot_manager/GetPoseError): Calcula error respecto a un spot",
+              "/list_parking_spots (parking_spot_manager/ListParkingSpots): Lista spots disponibles"
+            ],
+            "parameters": [
+              "map_name (string): Nombre del mapa cargado",
+              "auto_highlight_nearest (bool): Resaltar automáticamente el spot más cercano",
+              "error_feedback_rate (float): Hz para publicar feedback de error (0 = disabled)",
+              "initial_pose_covariance (list): Covarianza para initial_pose [x, y, theta]"
+            ],
+            "key_logic": [
+              "1. Al iniciar: Carga spots del archivo YAML",
+              "2. Publica todos los markers en RViz",
+              "3. Timer callback: Calcula spot más cercano basado en odometría",
+              "4. Servicio set_pose_from_spot:",
+              "   - Lee spot desde lista cargada",
+              "   - Crea PoseWithCovarianceStamped en frame 'map'",
+              "   - Publica a /initialpose",
+              "   - AMCL recibe y se inicializa"
+            ]
+          },
+          "critical_code_sections": {
+            "initial_pose_message": "Debe incluir header.frame_id='map', header.stamp=now(), pose con x,y,z,quaternion, y covariance matrix (6x6)",
+            "covariance_defaults": "Diagonal: [0.25, 0.25, 0, 0, 0, 0.068] para x=50cm, y=50cm, yaw=15deg uncertainty"
+          },
+          "dependencies": ["2.1", "2.2", "2.3"],
+          "validation": "ros2 service list | grep set_pose_from"
+        },
+        {
+          "id": "4.2",
+          "name": "Implementar cálculo de error en tiempo real",
+          "description": "Feedback visual/numérico de qué tan bien posicionado está el robot respecto a un spot",
+          "why": "Ayuda al usuario a saber si está bien posicionado antes de establecer la pose. Si el error es grande (>1m), la localización puede fallar.",
+          "where": {
+            "file": "parking_spot_manager/parking_spot_manager/nodes/parking_spot_loader_node.py",
+            "modify_existing": true,
+            "add_method": "calculate_current_error()"
+          },
+          "implementation_details": {
+            "logic": [
+              "1. Lee odometría actual (odom frame)",
+              "2. Para cada spot, calcula:",
+              "   - error_x = odom.x - spot.x (asumiendo que odom ~= posición real)",
+              "   - error_y = odom.y - spot.y",
+              "   - distance = sqrt(error_x^2 + error_y^2)",
+              "   - error_theta = angle_diff(odom.theta, spot.theta)",
+              "3. Encuentra el spot más cercano",
+              "4. Publica feedback: 'Spot más cercano: entrada (0.8m, 12°)'",
+              "5. Cambia color del marker según distancia:",
+              "   - Verde: < 0.3m",
+              "   - Amarillo: 0.3-1m",
+              "   - Rojo: > 1m"
+            ],
+            "timer_rate": "10 Hz (configurable con error_feedback_rate parameter)"
+          },
+          "dependencies": ["4.1"],
+          "validation": "ros2 topic echo /parking_spot_errors"
+        },
+        {
+          "id": "4.3",
+          "name": "Crear launch file para loader node",
+          "description": "Launch file que incluye el loader node en navigation.launch.py",
+          "why": "Integrar el nodo de carga en el workflow de navegación existente",
+          "where": {
+            "file": "parking_spot_manager/launch/parking_spot_loader.launch.py",
+            "create_new": true,
+            "modify_file": "go2_robot_sdk/launch/navigation.launch.py"
+          },
+          "implementation_details": {
+            "launch_includes": "Se puede incluir desde navigation.launch.py con IncludeLaunchDescription",
+            "parameters_to_pass": [
+              "map_name: Derivar del parámetro 'map' (quitar .yaml extension)",
+              "auto_highlight_nearest: true",
+              "error_feedback_rate: 5.0 Hz",
+              "initial_pose_covariance: [0.25, 0.25, 0.0, 0.0, 0.0, 0.068]"
+            ],
+            "modification_in_navigation_launch": "Añadir en include_launches después de cargar AMCL"
+          },
+          "dependencies": ["4.1", "4.2"],
+          "validation": "ros2 launch parking_spot_manager parking_spot_loader.launch.py map_name:=my_map"
+        }
+      ]
+    },
+
+    {
+      "phase": 5,
+      "name": "RViz Integration",
+      "description": "Integrar visualización en RViz para interacción intuitiva",
+      "estimated_time": "1.5 hours",
+      "tasks": [
+        {
+          "id": "5.1",
+          "name": "Configurar displays en RViz",
+          "description": "Añadir displays de MarkerArray a las configuraciones de RViz existentes",
+          "why": "Los usuarios necesitan VER las poses guardadas en el mapa. Sin visualización, el sistema es imposible de usar.",
+          "where": {
+            "modify_files": [
+              "go2_robot_sdk/config/single_robot_conf.rviz",
+              "go2_robot_sdk/config/multi_robot_conf.rviz"
+            ]
+          },
+          "implementation_details": {
+            "rviz_display_type": "MarkerArray",
+            "topic": "/parking_spot_markers",
+            "properties": {
+              "Enabled": true,
+              "Marker Topic": "/parking_spot_markers",
+              "Queue Size": 100
+            },
+            "layer_order": "Después de 'Map', antes de 'RobotModel' (para que sea visible pero no tape el robot)"
+          },
+          "dependencies": ["4.3"],
+          "validation": "Abrir RViz y verificar que el display MarkerArray aparece y muestra flechas"
+        },
+        {
+          "id": "5.2",
+          "name": "Añadir panel de texto para feedback",
+          "description": "Display de texto en RViz mostrando error actual y spot más cercano",
+          "why": "Feedback en tiempo real ayuda al usuario a saber qué tan bien está posicionado sin tener que correr comandos en terminal",
+          "where": {
+            "modify_files": [
+              "go2_robot_sdk/config/single_robot_conf.rviz"
+            ]
+          },
+          "implementation_details": {
+            "rviz_display_type": "String",
+            "topic": "/parking_spot_errors",
+            "position": "Esquina superior derecha",
+            "font_size": 14
+          },
+          "dependencies": ["5.1"],
+          "validation": "Ver texto en RViz mostrando 'Nearest spot: entrada (0.8m, 12°)'"
+        },
+        {
+          "id": "5.3",
+          "name": "Crear leyenda de colores en README",
+          "description": "Documentar significado de colores de los markers",
+          "why": "Los usuarios deben entender qué significa cada color sin tener que leer código",
+          "where": {
+            "modify_file": "parking_spot_manager/README.md",
+            "create_new": true
+          },
+          "content": {
+            "color_legend": {
+              "Verde": "Pose disponible, error < 0.3m",
+              "Amarillo": "Pose cercana, error 0.3-1.0m",
+              "Azul": "Pose seleccionada actualmente",
+              "Rojo": "Pose lejos, error > 1.0m (no recomendado usar)"
+            }
+          },
+          "dependencies": ["5.2"],
+          "validation": "cat parking_spot_manager/README.md"
+        }
+      ]
+    },
+
+    {
+      "phase": 6,
+      "name": "Integration & Testing",
+      "description": "Integrar con launch files existentes y probar workflow completo",
+      "estimated_time": "2 hours",
+      "tasks": [
+        {
+          "id": "6.1",
+          "name": "Modificar mapping.launch.py",
+          "description": "Incluir parking_spot_saver node en el launch de mapping",
+          "why": "El usuario debe poder guardar poses automáticamente cuando corre mapping sin comandos adicionales",
+          "where": {
+            "file": "go2_robot_sdk/launch/mapping.launch.py",
+            "line": "Después de línea 218 (después de incluir SLAM Toolbox)"
+          },
+          "implementation_details": {
+            "add_include": "IncludeLaunchDescription para parking_spot_saver.launch.py",
+            "pass_parameters": {
+              "map_name": "LaunchConfiguration('map_name', default=os.getenv('MAP_NAME', 'my_map'))",
+              "auto_save_interval": "0.0",
+              "auto_save_distance": "2.0"
+            },
+            "conditional": "Siempre cargado (no necesita flag)"
+          },
+          "dependencies": ["3.2"],
+          "validation": "ros2 launch go2_robot_sdk mapping.launch.py | grep parking_spot_saver"
+        },
+        {
+          "id": "6.2",
+          "name": "Modificar navigation.launch.py",
+          "description": "Incluir parking_spot_loader node en el launch de navigation",
+          "why": "El usuario debe poder cargar poses automáticamente cuando corre navigation",
+          "where": {
+            "file": "go2_robot_sdk/launch/navigation.launch.py",
+            "line": "Después de línea 223 (después de incluir AMCL Localization)"
+          },
+          "implementation_details": {
+            "add_include": "IncludeLaunchDescription para parking_spot_loader.launch.py",
+            "pass_parameters": {
+              "map_name": "Derivar de LaunchConfiguration('map') quitando .yaml y path",
+              "auto_highlight_nearest": "True",
+              "error_feedback_rate": "5.0"
+            },
+            "conditional": "Siempre cargado"
+          },
+          "dependencies": ["4.3"],
+          "validation": "ros2 launch go2_robot_sdk navigation.launch.py map:=my_map.yaml | grep parking_spot_loader"
+        },
+        {
+          "id": "6.3",
+          "name": "Crear script de testing end-to-end",
+          "description": "Script automatizado que simula el workflow completo",
+          "why": "Validar que toda la integración funciona sin necesidad de hardware real",
+          "where": {
+            "file": "parking_spot_manager/test/test_workflow.py",
+            "create_new": true
+          },
+          "implementation_details": {
+            "test_steps": [
+              "1. Simular SLAM publicando transform map->base_link",
+              "2. Llamar servicio /save_parking_spot varias veces",
+              "3. Verificar que archivo YAML se creó",
+              "4. Verificar que tiene N spots guardados",
+              "5. Simular shutdown",
+              "6. Iniciar loader node",
+              "7. Verificar que cargó los spots",
+              "8. Verificar que markers se publican",
+              "9. Llamar servicio /set_pose_from_spot",
+              "10. Verificar que /initialpose se publicó"
+            ],
+            "framework": "unittest con rclpy testing utilities"
+          },
+          "dependencies": ["6.1", "6.2"],
+          "validation": "python3 -m pytest parking_spot_manager/test/test_workflow.py"
+        },
+        {
+          "id": "6.4",
+          "name": "Actualizar package.xml y CMakeLists.txt",
+          "description": "Asegurar que todas las dependencias están declaradas",
+          "why": "Para que rosdep pueda instalar dependencias automáticamente y colcon build funcione",
+          "where": {
+            "files": [
+              "parking_spot_manager/package.xml",
+              "parking_spot_manager/setup.py"
+            ]
+          },
+          "implementation_details": {
+            "package_xml_dependencies": [
+              "<depend>rclpy</depend>",
+              "<depend>std_msgs</depend>",
+              "<depend>geometry_msgs</depend>",
+              "<depend>nav_msgs</depend>",
+              "<depend>visualization_msgs</depend>",
+              "<depend>tf2_ros</depend>",
+              "<depend>tf2_geometry_msgs</depend>",
+              "<depend>std_srvs</depend>"
+            ],
+            "setup_py_entry_points": {
+              "parking_spot_saver = parking_spot_manager.nodes.parking_spot_saver_node:main",
+              "parking_spot_loader = parking_spot_manager.nodes.parking_spot_loader_node:main"
+            }
+          },
+          "dependencies": ["6.3"],
+          "validation": "colcon build --packages-select parking_spot_manager"
+        }
+      ]
+    },
+
+    {
+      "phase": 7,
+      "name": "Documentation & User Interface",
+      "description": "Documentar uso y crear interfaces amigables",
+      "estimated_time": "1.5 hours",
+      "tasks": [
+        {
+          "id": "7.1",
+          "name": "Crear README principal del package",
+          "description": "Documentación completa de instalación, uso y troubleshooting",
+          "why": "Los usuarios necesitan saber cómo usar el sistema sin leer el código fuente",
+          "where": {
+            "file": "parking_spot_manager/README.md",
+            "sections": [
+              "Overview",
+              "Installation",
+              "Quick Start",
+              "Workflow Tutorial (SLAM -> Save -> Nav -> Load)",
+              "Services API",
+              "Troubleshooting",
+              "Advanced Configuration"
+            ]
+          },
+          "dependencies": ["6.4"],
+          "validation": "cat parking_spot_manager/README.md | grep 'Quick Start'"
+        },
+        {
+          "id": "7.2",
+          "name": "Actualizar README principal del proyecto",
+          "description": "Añadir sección sobre parking spots en el README del go2_ros2_sdk",
+          "why": "Integrar la documentación del nuevo feature en el README principal que los usuarios leen primero",
+          "where": {
+            "file": "README.md",
+            "line": "Después de la sección 'Autonomous Navigation' (línea ~193)"
+          },
+          "implementation_details": {
+            "section_title": "### Re-localization using Parking Spots",
+            "content": [
+              "Explicar el problema de re-localización",
+              "Cómo el sistema de parking spots lo resuelve",
+              "Link al README detallado del package",
+              "Ejemplo visual con screenshots/diagrams"
+            ]
+          },
+          "dependencies": ["7.1"],
+          "validation": "grep 'Parking Spots' README.md"
+        },
+        {
+          "id": "7.3",
+          "name": "Crear script CLI amigable",
+          "description": "Script wrapper que simplifica comandos comunes",
+          "why": "Usuarios no técnicos pueden usar comandos simples en lugar de ros2 service call con JSON",
+          "where": {
+            "file": "parking_spot_manager/scripts/parking_spot_cli.py",
+            "create_new": true,
+            "make_executable": true
+          },
+          "implementation_details": {
+            "commands": [
+              "parking_spot save [name] - Guarda pose actual",
+              "parking_spot list - Lista poses guardadas",
+              "parking_spot set <id|name> - Establece pose desde un spot",
+              "parking_spot nearest - Establece pose desde el spot más cercano",
+              "parking_spot status - Muestra error respecto a spots"
+            ],
+            "technology": "Python CLI con argparse, llamadas a ros2 services"
+          },
+          "dependencies": ["7.1"],
+          "validation": "parking_spot --help"
+        },
+        {
+          "id": "7.4",
+          "name": "Crear archivo de configuración de ejemplo",
+          "description": "YAML con configuración de ejemplo para usuarios",
+          "why": "Facilitar customización de parámetros sin editar código",
+          "where": {
+            "file": "parking_spot_manager/config/parking_spot_config.yaml",
+            "create_new": true
+          },
+          "implementation_details": {
+            "parameters": {
+              "saver": {
+                "auto_save_interval": 0.0,
+                "auto_save_distance": 2.0,
+                "marker_scale": 0.5,
+                "marker_lifetime": 0
+              },
+              "loader": {
+                "auto_highlight_nearest": true,
+                "error_feedback_rate": 5.0,
+                "initial_pose_covariance": [0.25, 0.25, 0.0, 0.0, 0.0, 0.068],
+                "max_error_distance": 2.0
+              }
+            }
+          },
+          "dependencies": ["7.3"],
+          "validation": "cat parking_spot_manager/config/parking_spot_config.yaml"
+        }
+      ]
+    }
+  ],
+
+  "file_structure_summary": {
+    "description": "Estructura final del proyecto después de implementación",
+    "tree": {
+      "parking_spot_manager/": {
+        "package.xml": "Metadata y dependencias del package ROS2",
+        "setup.py": "Script de instalación Python",
+        "README.md": "Documentación principal del package",
+        "parking_spot_manager/": {
+          "__init__.py": "Inicialización del módulo Python",
+          "nodes/": {
+            "parking_spot_saver_node.py": "Nodo para guardar poses durante SLAM",
+            "parking_spot_loader_node.py": "Nodo para cargar y usar poses durante navegación"
+          },
+          "utils/": {
+            "parking_spot.py": "Clase ParkingSpot - modelo de datos",
+            "storage.py": "Clase ParkingSpotStorage - lectura/escritura YAML",
+            "marker_publisher.py": "Clase MarkerPublisher - visualización RViz"
+          }
+        },
+        "launch/": {
+          "parking_spot_saver.launch.py": "Launch para el saver node",
+          "parking_spot_loader.launch.py": "Launch para el loader node"
+        },
+        "config/": {
+          "parking_spot_config.yaml": "Configuración de parámetros"
+        },
+        "srv/": {
+          "SaveNamedPose.srv": "Servicio para guardar pose con nombre",
+          "SetPoseFromSpot.srv": "Servicio para establecer initial_pose",
+          "GetPoseError.srv": "Servicio para obtener error de posicionamiento",
+          "ListParkingSpots.srv": "Servicio para listar spots disponibles"
+        },
+        "scripts/": {
+          "parking_spot_cli.py": "CLI wrapper amigable"
+        },
+        "test/": {
+          "test_workflow.py": "Tests end-to-end"
+        }
+      }
+    }
+  },
+
+  "testing_checklist": [
+    {
+      "test": "Build del package",
+      "command": "colcon build --packages-select parking_spot_manager",
+      "expected": "Build exitoso sin errores"
+    },
+    {
+      "test": "Nodo saver se inicia",
+      "command": "ros2 run parking_spot_manager parking_spot_saver",
+      "expected": "Nodo corre sin errores, espera transform map->base_link"
+    },
+    {
+      "test": "Guardar pose funciona",
+      "command": "ros2 service call /save_parking_spot std_srvs/srv/Trigger",
+      "expected": "Retorna success: true, crea archivo YAML"
+    },
+    {
+      "test": "Archivo YAML se genera correctamente",
+      "command": "cat my_map_parking_spots.yaml",
+      "expected": "Formato YAML válido con poses guardadas"
+    },
+    {
+      "test": "Nodo loader se inicia",
+      "command": "ros2 run parking_spot_manager parking_spot_loader --ros-args -p map_name:=my_map",
+      "expected": "Carga spots del YAML, publica markers"
+    },
+    {
+      "test": "Markers visibles en RViz",
+      "command": "Abrir RViz y activar display MarkerArray",
+      "expected": "Flechas verdes aparecen en posiciones guardadas"
+    },
+    {
+      "test": "Set initial_pose funciona",
+      "command": "ros2 service call /set_pose_from_spot 'spot_id: 0'",
+      "expected": "Publica a /initialpose, AMCL se inicializa"
+    },
+    {
+      "test": "Workflow completo mapping->navigation",
+      "command": "Seguir tutorial del README",
+      "expected": "Robot se localiza correctamente en sesión de navegación"
+    }
+  ],
+
+  "integration_points": {
+    "mapping_launch": {
+      "file": "go2_robot_sdk/launch/mapping.launch.py",
+      "modification": "Incluir parking_spot_saver.launch.py en include_launches",
+      "line_number": "~220"
+    },
+    "navigation_launch": {
+      "file": "go2_robot_sdk/launch/navigation.launch.py",
+      "modification": "Incluir parking_spot_loader.launch.py en include_launches",
+      "line_number": "~235"
+    },
+    "rviz_config": {
+      "files": [
+        "go2_robot_sdk/config/single_robot_conf.rviz",
+        "go2_robot_sdk/config/multi_robot_conf.rviz"
+      ],
+      "modification": "Añadir display MarkerArray para /parking_spot_markers"
+    }
+  },
+
+  "future_enhancements": [
+    {
+      "name": "Auto-select nearest spot on startup",
+      "description": "Automáticamente seleccionar el spot más cercano cuando se inicia navegación"
+    },
+    {
+      "name": "RViz interactive markers",
+      "description": "Permitir guardar poses haciendo click en el mapa de RViz"
+    },
+    {
+      "name": "Pose interpolation",
+      "description": "Si el robot está entre dos spots, interpolar la pose inicial"
+    },
+    {
+      "name": "Visual odometry fusion",
+      "description": "Usar cámara para mejorar precisión de posicionamiento manual"
+    },
+    {
+      "name": "Web interface",
+      "description": "Panel web para gestionar spots sin usar terminal"
+    }
+  ],
+
+  "notes": {
+    "critical_dependencies": [
+      "TF2 debe estar funcionando correctamente",
+      "SLAM debe publicar transform map->odom",
+      "Odometría debe publicar transform odom->base_link",
+      "AMCL debe estar subscrito a /initialpose"
+    ],
+    "common_pitfalls": [
+      "Si SLAM no ha inicializado, lookup_transform fallará - agregar retry logic",
+      "Si el archivo YAML no existe, loader debe manejar gracefully",
+      "Covariance matrix debe ser simétrica y positiva definida",
+      "Frame IDs deben ser exactamente 'map' no 'Map' o '/map'"
+    ],
+    "performance_considerations": [
+      "Marker publishing puede ser costoso con muchos spots (>100) - implementar culling",
+      "Error calculation a 10Hz es suficiente, más frecuente es innecesario",
+      "YAML I/O debe ser asíncrono para no bloquear callbacks"
+    ]
+  }
+}

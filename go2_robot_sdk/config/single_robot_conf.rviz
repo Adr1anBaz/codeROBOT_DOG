@@ -408,6 +408,19 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /transformed_global_plan
       Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: ParkingSpots
+      Namespaces:
+        parking_spots: true
+        parking_spots_labels: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /parking_spot_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

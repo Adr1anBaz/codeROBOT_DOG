@@ -1,0 +1,15 @@
+parking_spot_saver:
+  ros__parameters:
+    map_name: "my_map"
+    base_directory: ""
+    auto_save_distance: 0.0
+
+parking_spot_loader:
+  ros__parameters:
+    map_name: "my_map"
+    base_directory: ""
+    auto_highlight_nearest: true
+    error_feedback_rate: 5.0
+    covariance_x: 0.25
+    covariance_y: 0.25
+    covariance_yaw: 0.068
